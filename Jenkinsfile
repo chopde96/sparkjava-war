@@ -1,13 +1,67 @@
-pipeline {                                    // 1  // Defines the start of the Jenkins pipeline block
-    agent any                                 // Specifies the pipeline can run on any available agent
-    environment {                             // 2  // Defines environment variables for the pipeline
-        PATH = "/opt/maven/bin:$PATH"         // Adds Maven's path to the system's PATH variable
-    }                                         // 2  // Ends the environment block
-    stages {                                  // 3  // Defines the stages block where multiple stages are declared
-        stage('build') {                      // 6  // Creates a stage named 'build'
-            steps {                           // 7  // Defines the steps that will be executed in this stage
-                sh 'mvn clean install'        // Runs the Maven clean install command to build the project
-            }                                 // 7  // Ends the steps block for 'build' stage
-        }                                     // 6  // Ends the 'build' stage
-    }                                         // 3  // Ends the stages block
-}                                             // 1  // Ends the pipeline block
+// Define the URL of the Artifactory registry
+def registry = 'https://trial4bf4ow.jfrog.io/'
+
+pipeline {
+    agent any
+
+    environment {
+        PATH = "/opt/maven/bin:$PATH"
+    }
+
+    stages {
+
+        stage("build") {
+            steps {
+                echo "----------- build started ----------"
+                sh 'mvn clean deploy -Dmaven.test.skip=true'
+                echo "----------- build completed ----------"
+            }
+        }
+
+        stage("test") {
+            steps {
+                echo "----------- unit test started ----------"
+                sh 'mvn surefire-report:report'
+                echo "----------- unit test completed ----------"
+            }
+        }
+
+        stage('SonarQube analysis') {
+            environment {
+                scannerHome = tool 'saidemy-sonar-scanner'
+            }
+
+            steps {
+                withSonarQubeEnv('saidemy-sonarqube-server') {
+                    sh "${scannerHome}/bin/sonar-scanner"
+                }
+            }
+        }
+
+        stage("Jar Publish") {
+            steps {
+                script {
+                    echo '<--------------- Jar Publish Started --------------->'
+                    def server = Artifactory.newServer url: registry + "/artifactory", credentialsId: "artifact-cred"
+                    def properties = "buildid=${env.BUILD_ID},commitid=${GIT_COMMIT}"
+                    def uploadSpec = """{
+                          "files": [
+                            {
+                              "pattern": "jarstaging/(*)",
+                              "target": "ankit-libs-release-local/{1}",
+                              "flat": "false",
+                              "props": "${properties}",
+                              "exclusions": [ "*.sha1", "*.md5"]
+                            }
+                         ]
+                     }"""
+                    def buildInfo = server.upload(uploadSpec)
+                    buildInfo.env.collect()
+                    server.publishBuildInfo(buildInfo)
+                    echo '<--------------- Jar Publish Ended --------------->'
+                }
+            }
+        }
+
+    }
+}
